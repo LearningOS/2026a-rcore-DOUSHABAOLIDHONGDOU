@@ -1,6 +1,6 @@
 //! Process management syscalls
 use crate::config::PAGE_SIZE;
-use crate::mm::{translated_byte_buffer, MapPermission, PageTable, VirtAddr};
+use crate::mm::{translated_byte_buffer, MapPermission, PTEFlags, PageTable, VirtAddr};
 use crate::task::{
     change_program_brk, current_user_token, exit_current_and_run_next, get_syscall_count,
     mmap_current, munmap_current, suspend_current_and_run_next,
@@ -34,10 +34,17 @@ pub fn sys_yield() -> isize {
 fn translate_user_byte(token: usize, va: usize, write: bool) -> Option<*mut u8> {
     let page_table = PageTable::from_token(token);
     let pte = page_table.translate(VirtAddr::from(va).floor())?;
-    if !pte.is_valid() || (write && !pte.writable()) || (!write && !pte.readable()) {
+    // a user pointer must hit a valid, user-accessible page: the page-table
+    // walk ignores address bits above bit 38, so e.g. isize::MAX would
+    // otherwise alias the (non-user) trampoline page
+    if !pte.is_valid()
+        || !pte.flags().contains(PTEFlags::U)
+        || (write && !pte.writable())
+        || (!write && !pte.readable())
+    {
         return None;
     }
-    let pa = pte.ppn().0 * PAGE_SIZE + va & (PAGE_SIZE - 1);
+    let pa = pte.ppn().0 * PAGE_SIZE + (va & (PAGE_SIZE - 1));
     Some(pa as *mut u8)
 }
 
