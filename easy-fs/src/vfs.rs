@@ -73,6 +73,117 @@ impl Inode {
             })
         })
     }
+    /// A stable identifier of this inode, used to fill `Stat::ino`
+    pub fn inode_id(&self) -> u64 {
+        ((self.block_id as u64) << 32) | self.block_offset as u64
+    }
+    /// Number of hard links pointing to this inode
+    pub fn nlink(&self) -> u32 {
+        self.read_disk_inode(|disk_inode| disk_inode.nlink)
+    }
+    /// Whether this inode is a directory
+    pub fn is_dir(&self) -> bool {
+        self.read_disk_inode(|disk_inode| disk_inode.is_dir())
+    }
+    /// Create a hard link `new_name` in this directory pointing to the same
+    /// inode as `old_name`. Return 0 on success, -1 on failure.
+    pub fn link(&self, old_name: &str, new_name: &str) -> isize {
+        let mut fs = self.fs.lock();
+        let (old_id, new_exists) = self.read_disk_inode(|disk_inode| {
+            (
+                self.find_inode_id(old_name, disk_inode),
+                self.find_inode_id(new_name, disk_inode).is_some(),
+            )
+        });
+        let old_id = match old_id {
+            Some(id) => id,
+            None => return -1,
+        };
+        if new_exists {
+            return -1;
+        }
+        // increase the link count of the old inode
+        let (block_id, block_offset) = fs.get_disk_inode_pos(old_id);
+        get_block_cache(block_id as usize, Arc::clone(&self.block_device))
+            .lock()
+            .modify(block_offset, |disk_inode: &mut DiskInode| {
+                disk_inode.nlink += 1;
+            });
+        // append a new directory entry
+        self.modify_disk_inode(|root_inode| {
+            let file_count = (root_inode.size as usize) / DIRENT_SZ;
+            let new_size = ((file_count + 1) * DIRENT_SZ) as u32;
+            self.increase_size(new_size, root_inode, &mut fs);
+            let dirent = DirEntry::new(new_name, old_id);
+            root_inode.write_at(
+                file_count * DIRENT_SZ,
+                dirent.as_bytes(),
+                &self.block_device,
+            );
+        });
+        block_cache_sync_all();
+        0
+    }
+    /// Remove the directory entry `name` from this directory and decrement the
+    /// link count of its inode. The inode and its data blocks are freed once
+    /// the link count drops to zero. Return 0 on success, -1 on failure.
+    pub fn unlink(&self, name: &str) -> isize {
+        let mut fs = self.fs.lock();
+        // locate the directory entry
+        let found = self.read_disk_inode(|disk_inode| {
+            let file_count = (disk_inode.size as usize) / DIRENT_SZ;
+            let mut dirent = DirEntry::empty();
+            for i in 0..file_count {
+                assert_eq!(
+                    disk_inode.read_at(i * DIRENT_SZ, dirent.as_bytes_mut(), &self.block_device),
+                    DIRENT_SZ,
+                );
+                if dirent.name() == name {
+                    return Some((i, dirent.inode_id()));
+                }
+            }
+            None
+        });
+        let (idx, inode_id) = match found {
+            Some(found) => found,
+            None => return -1,
+        };
+        // decrement the link count
+        let (block_id, block_offset) = fs.get_disk_inode_pos(inode_id);
+        let nlink = get_block_cache(block_id as usize, Arc::clone(&self.block_device))
+            .lock()
+            .modify(block_offset, |disk_inode: &mut DiskInode| {
+                disk_inode.nlink -= 1;
+                disk_inode.nlink
+            });
+        if nlink == 0 {
+            // free all data blocks and the inode itself
+            let data_blocks = get_block_cache(block_id as usize, Arc::clone(&self.block_device))
+                .lock()
+                .modify(block_offset, |disk_inode: &mut DiskInode| {
+                    disk_inode.clear_size(&self.block_device)
+                });
+            for data_block in data_blocks {
+                fs.dealloc_data(data_block);
+            }
+            fs.dealloc_inode(inode_id);
+        }
+        // remove the directory entry by shifting the following entries left
+        self.modify_disk_inode(|root_inode| {
+            let file_count = (root_inode.size as usize) / DIRENT_SZ;
+            let mut buf = [0u8; DIRENT_SZ];
+            for i in idx..file_count - 1 {
+                assert_eq!(
+                    root_inode.read_at((i + 1) * DIRENT_SZ, &mut buf, &self.block_device),
+                    DIRENT_SZ,
+                );
+                root_inode.write_at(i * DIRENT_SZ, &buf, &self.block_device);
+            }
+            root_inode.size -= DIRENT_SZ as u32;
+        });
+        block_cache_sync_all();
+        0
+    }
     /// Increase the size of a disk inode
     fn increase_size(
         &self,

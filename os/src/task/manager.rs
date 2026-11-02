@@ -23,7 +23,20 @@ impl TaskManager {
     }
     /// Take a process out of the ready queue
     pub fn fetch(&mut self) -> Option<Arc<TaskControlBlock>> {
-        self.ready_queue.pop_front()
+        // stride scheduling: pick the task with the smallest pass value and
+        // advance its pass by its stride
+        let idx = self
+            .ready_queue
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, task)| task.inner_exclusive_access().pass)
+            .map(|(idx, _)| idx)?;
+        let task = self.ready_queue.remove(idx).unwrap();
+        {
+            let mut inner = task.inner_exclusive_access();
+            inner.pass += inner.stride;
+        }
+        Some(task)
     }
 }
 

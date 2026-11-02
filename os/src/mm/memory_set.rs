@@ -318,6 +318,66 @@ impl MemorySet {
             false
         }
     }
+
+    /// Map the user area `[start, start + len)`.
+    ///
+    /// `start` must be page-aligned, while `len` is rounded up to whole pages.
+    /// Return `false` if the range is invalid or overlaps an existing area.
+    pub fn mmap(&mut self, start: VirtAddr, len: usize, map_perm: MapPermission) -> bool {
+        if len == 0 || !start.aligned() {
+            return false;
+        }
+        let end = match start.0.checked_add(len) {
+            Some(end) => end,
+            None => return false,
+        };
+        let start_vpn: VirtPageNum = start.floor();
+        let end_vpn: VirtPageNum = VirtAddr::from(end).ceil();
+        if end_vpn <= start_vpn {
+            return false;
+        }
+        // refuse to overlap any existing area
+        if self
+            .areas
+            .iter()
+            .any(|area| start_vpn < area.vpn_range.get_end() && area.vpn_range.get_start() < end_vpn)
+        {
+            return false;
+        }
+        self.push(
+            MapArea::new(start, end_vpn.into(), MapType::Framed, map_perm),
+            None,
+        );
+        true
+    }
+
+    /// Unmap the user area `[start, start + len)`.
+    ///
+    /// Both `start` and `len` must be page-aligned, and the range must exactly
+    /// match one existing user area. Return `false` otherwise.
+    pub fn munmap(&mut self, start: VirtAddr, len: usize) -> bool {
+        if len == 0 || len % PAGE_SIZE != 0 || !start.aligned() {
+            return false;
+        }
+        let end = match start.0.checked_add(len) {
+            Some(end) => end,
+            None => return false,
+        };
+        let start_vpn: VirtPageNum = start.floor();
+        let end_vpn: VirtPageNum = VirtAddr::from(end).ceil();
+        let pos = self.areas.iter().position(|area| {
+            area.map_perm.contains(MapPermission::U)
+                && area.vpn_range.get_start() == start_vpn
+                && area.vpn_range.get_end() == end_vpn
+        });
+        if let Some(pos) = pos {
+            let mut area = self.areas.remove(pos);
+            area.unmap(&mut self.page_table);
+            true
+        } else {
+            false
+        }
+    }
 }
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {
