@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "courseId": 2073,
+  "repository": "LearningOS/2026a-rcore-DOUSHABAOLIDHONGDOU",
+  "user": "DOUSHABAOLIDHONGDOU",
+  "totalScore": 500,
+  "chapters": {
+    "ch3": {
+      "points": "7/7",
+      "score": 100,
+      "commit": "4efb10447a8648db15d8f6733fc15a0c500faca0"
+    }
+  },
+  "score": 100,
+  "upload": {
+    "status": "pending",
+    "runId": "41450617712",
+    "runAttempt": "1"
+  }
+}
