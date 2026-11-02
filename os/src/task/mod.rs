@@ -81,6 +81,8 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     let mut task_inner = task.inner_exclusive_access();
     let process = task.process.upgrade().unwrap();
     let tid = task_inner.res.as_ref().unwrap().tid;
+    // remove this task from the deadlock detection graph
+    crate::sync::deadlock::task_exit(process.getpid(), tid);
     // record exit code
     task_inner.exit_code = Some(exit_code);
     task_inner.res = None;
@@ -98,6 +100,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     // the process should terminate at once
     if tid == 0 {
         let pid = process.getpid();
+        crate::sync::deadlock::process_exit(pid);
         if pid == IDLE_PID {
             println!(
                 "[kernel] Idle process exit with exit_code {} ...",
