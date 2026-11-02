@@ -14,7 +14,9 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
+use crate::config::MAX_SYSCALL_NUM;
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::{MapPermission, VirtAddr};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
@@ -133,6 +135,40 @@ impl TaskManager {
         inner.tasks[cur].change_program_brk(size)
     }
 
+    /// Count one invocation of syscall `id` by the current task
+    fn add_syscall_count(&self, id: usize) {
+        if id >= MAX_SYSCALL_NUM {
+            return;
+        }
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].syscall_times[id] += 1;
+    }
+
+    /// Get how many times the current task has invoked syscall `id`
+    fn get_syscall_count(&self, id: usize) -> usize {
+        if id >= MAX_SYSCALL_NUM {
+            return 0;
+        }
+        let inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].syscall_times[id] as usize
+    }
+
+    /// Map a user area in the current task's address space
+    fn mmap_current(&self, start: VirtAddr, len: usize, map_perm: MapPermission) -> bool {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].memory_set.mmap(start, len, map_perm)
+    }
+
+    /// Unmap a user area in the current task's address space
+    fn munmap_current(&self, start: VirtAddr, len: usize) -> bool {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].memory_set.munmap(start, len)
+    }
+
     /// Switch current `Running` task to the task we have found,
     /// or there is no `Ready` task and we can exit with all applications completed
     fn run_next_task(&self) {
@@ -201,4 +237,24 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// Count one invocation of syscall `id` by the current task
+pub fn add_syscall_count(id: usize) {
+    TASK_MANAGER.add_syscall_count(id);
+}
+
+/// Get how many times the current task has invoked syscall `id`
+pub fn get_syscall_count(id: usize) -> usize {
+    TASK_MANAGER.get_syscall_count(id)
+}
+
+/// Map a user area in the current task's address space
+pub fn mmap_current(start: VirtAddr, len: usize, map_perm: MapPermission) -> bool {
+    TASK_MANAGER.mmap_current(start, len, map_perm)
+}
+
+/// Unmap a user area in the current task's address space
+pub fn munmap_current(start: VirtAddr, len: usize) -> bool {
+    TASK_MANAGER.munmap_current(start, len)
 }
